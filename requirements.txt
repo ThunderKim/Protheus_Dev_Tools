@@ -1,0 +1,12 @@
+# ══════════════════════════════════════════════════
+#  Protheus Dicionário Tool — Dependências Python
+# ══════════════════════════════════════════════════
+
+# Conexão SQL Server (obrigatório)
+pyodbc
+
+# Exportação para Excel (opcional — habilita botão XLSX)
+openpyxl
+
+# Extração de arquivos .7z (opcional — necessário apenas se usar 7-Zip)
+py7zr
