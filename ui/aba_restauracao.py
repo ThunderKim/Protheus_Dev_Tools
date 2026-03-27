@@ -548,13 +548,30 @@ class AbaRestauracao(tk.Frame):
             )
             conn = pyodbc.connect(conn_str, autocommit=True)
             cur  = conn.cursor()
+
+            # Descobre pasta padrao do SQL Server
+            data_dir = self._obter_data_dir(cur)
+            self.after(0, self._log, f"  Pasta de dados SQL Server: {data_dir}")
+
+            # Le lista de arquivos dentro do .bak e monta WITH MOVE
+            move_clauses = self._obter_move_clauses(cur, bak_extraido, banco, data_dir)
+            for m in move_clauses:
+                self.after(0, self._log, f"  MOVE: {m}")
+
             self.after(0, self._log, "  Encerrando conexões ativas...")
-            cur.execute(f"ALTER DATABASE [{banco}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE")
+            try:
+                cur.execute(
+                    f"ALTER DATABASE [{banco}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE")
+            except Exception:
+                pass  # banco pode nao existir ainda na primeira restauracao
+
             self.after(0, self._log, "  Restaurando (pode demorar)...")
+            move_sql = ",\n    ".join(move_clauses)
             cur.execute(f"""
                 RESTORE DATABASE [{banco}]
                 FROM DISK = N'{bak_extraido}'
-                WITH REPLACE, RECOVERY
+                WITH REPLACE, RECOVERY,
+                    {move_sql}
             """)
             cur.execute(f"ALTER DATABASE [{banco}] SET MULTI_USER")
             conn.close()
@@ -576,6 +593,64 @@ class AbaRestauracao(tk.Frame):
         except Exception as e:
             self.after(0, self._log, f"[BANCO] ❌ ERRO: {e}")
             self.after(0, messagebox.showerror, "Erro na Restauração do Banco", str(e))
+
+    def _obter_data_dir(self, cur) -> str:
+        """Retorna a pasta padrao de dados do SQL Server.
+        Tenta primeiro a chave de registro via xp_instance_regread;
+        se falhar usa C:\\Program Files\\Microsoft SQL Server."""
+        try:
+            cur.execute("""
+                EXEC master.dbo.xp_instance_regread
+                    N'HKEY_LOCAL_MACHINE',
+                    N'Software\\Microsoft\\MSSQLServer\\MSSQLServer',
+                    N'DefaultData'
+            """)
+            row = cur.fetchone()
+            if row and row[1]:
+                return str(row[1])
+        except Exception:
+            pass
+        # Fallback: pasta DATA da instancia padrao
+        try:
+            cur.execute("SELECT SERVERPROPERTY('InstanceDefaultDataPath')")
+            row = cur.fetchone()
+            if row and row[0]:
+                return str(row[0]).rstrip("\\")
+        except Exception:
+            pass
+        return "C:\\Program Files\\Microsoft SQL Server\\MSSQL15.MSSQLSERVER\\MSSQL\\DATA"
+
+    def _obter_move_clauses(self, cur, bak_path: str, banco: str, data_dir: str) -> list[str]:
+        """Executa RESTORE FILELISTONLY para ler os arquivos logicos do .bak
+        e monta as clausulas MOVE redirecionando para data_dir."""
+        cur.execute(f"RESTORE FILELISTONLY FROM DISK = N'{bak_path}'")
+        rows = cur.fetchall()
+        cols = [d[0].lower() for d in cur.description]
+
+        # Indices das colunas necessarias
+        idx_nome    = cols.index("logicalname")
+        idx_tipo    = cols.index("type")      # D = data, L = log
+
+        clauses = []
+        data_count = 0
+        log_count  = 0
+
+        for row in rows:
+            nome_logico = row[idx_nome]
+            tipo        = row[idx_tipo].upper()
+
+            if tipo == "D":
+                data_count += 1
+                sufixo = f"_{data_count}" if data_count > 1 else ""
+                novo_path = os.path.join(data_dir, f"{banco}{sufixo}.mdf")
+            else:
+                log_count += 1
+                sufixo = f"_{log_count}" if log_count > 1 else ""
+                novo_path = os.path.join(data_dir, f"{banco}{sufixo}_log.ldf")
+
+            clauses.append(f"MOVE N'{nome_logico}' TO N'{novo_path}'")
+
+        return clauses
 
     def _encontrar_bak(self, nomes: list, pasta: str, nome_bak: str) -> str:
         if nome_bak:

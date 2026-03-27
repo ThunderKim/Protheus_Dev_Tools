@@ -12,11 +12,12 @@ from config import CONFIG, carregar_conexoes, salvar_conexoes
 from database import BancoDados
 from historico import HistoricoConsultas
 
-from ui.aba_consulta   import AbaConsulta
-from ui.aba_sql_livre  import AbaSqlLivre
-from ui.aba_nfe        import AbaNfe
+from ui.aba_consulta    import AbaConsulta
+from ui.aba_sql_livre   import AbaSqlLivre
+from ui.aba_nfe         import AbaNfe
 from ui.aba_restauracao import AbaRestauracao
-from ui.ajuda          import abrir_ajuda
+from ui.aba_api_fake    import AbaApiFake
+from ui.ajuda           import abrir_ajuda
 
 
 # Mapeamento: nome da aba → método do BancoDados
@@ -49,11 +50,11 @@ class App(tk.Tk):
         self.configure(bg="#0079B8")
         self.resizable(True, True)
 
+        self._criar_rodape()
         self._aplicar_estilo()
         self._criar_header()
         self._criar_painel_conexao()
-        self._criar_notebook()
-        self._criar_rodape()
+        self._criar_notebook()        
 
         # Tenta conectar silenciosamente ao abrir
         self.after(100, lambda: self._conectar(silencioso=True))
@@ -223,6 +224,12 @@ class App(tk.Tk):
 
         # Restauração de base
         AbaRestauracao(
+            notebook        = self.notebook,
+            atualizar_rodape= self._set_rodape,
+        )
+
+        # API Fake
+        AbaApiFake(
             notebook        = self.notebook,
             atualizar_rodape= self._set_rodape,
         )
