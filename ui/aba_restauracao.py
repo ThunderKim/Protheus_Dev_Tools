@@ -10,6 +10,7 @@ import shutil
 import time
 import threading
 import zipfile
+import stat
 import base64
 import urllib.request
 import tkinter as tk
@@ -387,6 +388,45 @@ class AbaRestauracao(tk.Frame):
         self._log_widget.delete("1.0", "end")
         self._log_widget.config(state="disabled")
 
+    def _remover_readonly(self, path: str) -> None:
+        """Remove o atributo read-only de um arquivo (necessario no Windows)."""
+        try:
+            os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+        except Exception:
+            pass
+
+    def _rmtree_force(self, pasta: str) -> None:
+        """Remove uma arvore de diretorios ignorando atributos read-only."""
+        def on_error(func, path, exc_info):
+            # Tenta remover o atributo read-only e repetir
+            try:
+                os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+                func(path)
+            except Exception:
+                pass
+        shutil.rmtree(pasta, onerror=on_error)
+
+    def _extrair_zip_com_permissao(self, caminho: str, pasta_extracao: str) -> list:
+        """Extrai o ZIP e remove o atributo read-only de todos os arquivos extraidos."""
+        nomes = self._extrair_zip(caminho, pasta_extracao)
+
+        # Percorre todos os arquivos extraidos e garante permissao de escrita
+        self.after(0, self._log, "  Ajustando permissoes dos arquivos extraidos...")
+        count = 0
+        for dirpath, dirs, files in os.walk(pasta_extracao):
+            for fname in files:
+                fpath = os.path.join(dirpath, fname)
+                try:
+                    atual = os.stat(fpath).st_mode
+                    if not (atual & stat.S_IWRITE):
+                        os.chmod(fpath, atual | stat.S_IWRITE)
+                        count += 1
+                except Exception:
+                    pass
+        if count:
+            self.after(0, self._log, f"  {count} arquivo(s) com permissao ajustada.")
+        return nomes
+
     # ══════════════════════════════════════════════════════
     #  DOWNLOAD / EXTRAÇÃO
     # ══════════════════════════════════════════════════════
@@ -558,24 +598,56 @@ class AbaRestauracao(tk.Frame):
             for m in move_clauses:
                 self.after(0, self._log, f"  MOVE: {m}")
 
-            self.after(0, self._log, "  Encerrando conexões ativas...")
-            try:
-                cur.execute(
-                    f"ALTER DATABASE [{banco}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE")
-            except Exception:
-                pass  # banco pode nao existir ainda na primeira restauracao
+            # ── Verifica estado atual do banco ────────────────────
+            self.after(0, self._log, "  Verificando estado do banco...")
+            estado = self._obter_estado_banco(cur, banco)
+            self.after(0, self._log, f"  Estado atual: {estado or 'nao existe'}")
 
-            self.after(0, self._log, "  Restaurando (pode demorar)...")
-            move_sql = ",\n    ".join(move_clauses)
-            cur.execute(f"""
-                RESTORE DATABASE [{banco}]
-                FROM DISK = N'{bak_extraido}'
-                WITH REPLACE, RECOVERY,
-                    {move_sql}
-            """)
-            cur.execute(f"ALTER DATABASE [{banco}] SET MULTI_USER")
-            conn.close()
-            self.after(0, self._log, "  RESTORE concluído!")
+            if estado == "RESTORING":
+                # Banco preso em RESTORING de uma tentativa anterior:
+                # aplica RESTORE WITH RECOVERY para finalizar sem novo .bak
+                self.after(0, self._log,
+                    "  Banco em estado RESTORING — aplicando RECOVERY...")
+                cur.execute(f"RESTORE DATABASE [{banco}] WITH RECOVERY")
+                cur.execute(f"ALTER DATABASE [{banco}] SET MULTI_USER")
+                conn.close()
+                self.after(0, self._log, "  RECOVERY aplicado com sucesso!")
+            else:
+                # Fluxo normal: encerra conexoes e restaura
+                self.after(0, self._log, "  Encerrando conexões ativas...")
+                try:
+                    cur.execute(
+                        f"ALTER DATABASE [{banco}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE")
+                except Exception:
+                    pass  # banco pode nao existir ainda na primeira restauracao
+
+                self.after(0, self._log, "  Restaurando (pode demorar)...")
+                move_sql = ",\n    ".join(move_clauses)
+                cur.execute(f"""
+                    RESTORE DATABASE [{banco}]
+                    FROM DISK = N'{bak_extraido}'
+                    WITH REPLACE, RECOVERY,
+                        {move_sql}
+                """)
+
+                # ── Aguarda banco sair do estado RESTORING ────────────
+                self.after(0, self._log, "  Aguardando banco ficar ONLINE...")
+                for _ in range(30):  # ate 30s
+                    time.sleep(1)
+                    est = self._obter_estado_banco(cur, banco)
+                    self.after(0, self._log, f"  Estado: {est}")
+                    if est == "ONLINE":
+                        break
+                    if est == "RESTORING":
+                        # Backup foi gerado com NORECOVERY — aplica RECOVERY agora
+                        self.after(0, self._log,
+                            "  Backup com NORECOVERY detectado — aplicando RECOVERY...")
+                        cur.execute(f"RESTORE DATABASE [{banco}] WITH RECOVERY")
+                        break
+
+                cur.execute(f"ALTER DATABASE [{banco}] SET MULTI_USER")
+                conn.close()
+                self.after(0, self._log, "  RESTORE concluído!")
 
             if limpar_tmp and origem == "download":
                 self.after(0, self._log, "[BANCO] Passo 4/4: Limpando temporários...")
@@ -593,6 +665,17 @@ class AbaRestauracao(tk.Frame):
         except Exception as e:
             self.after(0, self._log, f"[BANCO] ❌ ERRO: {e}")
             self.after(0, messagebox.showerror, "Erro na Restauração do Banco", str(e))
+
+    def _obter_estado_banco(self, cur, banco: str) -> str | None:
+        """Retorna o estado atual do banco (ONLINE, RESTORING, OFFLINE etc.)
+        ou None se o banco nao existir."""
+        try:
+            cur.execute(
+                "SELECT state_desc FROM sys.databases WHERE name = ?", banco)
+            row = cur.fetchone()
+            return row[0].upper() if row else None
+        except Exception:
+            return None
 
     def _obter_data_dir(self, cur) -> str:
         """Retorna a pasta padrao de dados do SQL Server.
@@ -665,9 +748,7 @@ class AbaRestauracao(tk.Frame):
         return os.path.join(pasta, baks[0])
 
     def _restaurar_pasta(self) -> None:
-        threading.Thread(target=self._exec_pasta, daemon=True).start()
-
-    def _exec_pasta(self) -> None:
+        # Coleta valores da UI antes de entrar na thread
         destino    = self.rst_pasta_dest.get().strip()
         pasta_tmp  = self.rst_pasta_tmp.get().strip()
         limpar_tmp = self.rst_limpar_tmp.get()
@@ -676,56 +757,91 @@ class AbaRestauracao(tk.Frame):
         if origem == "download":
             zip_pasta = self.rst_zip_pasta.get().strip()
             if not all([zip_pasta, destino, pasta_tmp]):
-                self.after(0, messagebox.showwarning, "Atenção",
+                messagebox.showwarning("Atenção",
                     "Preencha todos os campos da seção de pasta!")
                 return
+            zip_local = None
         else:
             zip_local = self.rst_zip_pasta_local.get().strip()
-            if not all([zip_local, destino]):
-                self.after(0, messagebox.showwarning, "Atenção",
-                    "Informe o arquivo ZIP local e a pasta DESTINO!")
+            if not zip_local:
+                messagebox.showwarning("Atenção",
+                    "Selecione o arquivo ZIP local da pasta!")
                 return
+            if not destino:
+                messagebox.showwarning("Atenção",
+                    "Informe a Pasta DESTINO (Protheus_Data atual)!")
+                return
+            zip_pasta = None
 
-        confirmar = [False]
-        def pedir():
-            confirmar[0] = messagebox.askyesno(
-                "Confirmar restauração",
-                f"Esta operação irá DELETAR a pasta:\n{destino}\n\n"
-                "e substituí-la pelo conteúdo do ZIP.\n\nDeseja continuar?")
-        self.after(0, pedir)
-        time.sleep(0.6)
-        if not confirmar[0]:
-            self.after(0, self._log, "[PASTA] Operação cancelada.")
+        # Confirmacao no thread da UI — antes de lancar a thread de trabalho
+        ok = messagebox.askyesno(
+            "Confirmar restauração",
+            f"Esta operação irá DELETAR a pasta:\n\n"
+            f"  {destino}\n\n"
+            "e substituí-la pelo conteúdo do ZIP.\n\n"
+            "Deseja continuar?")
+        if not ok:
+            self._log("[PASTA] Operação cancelada pelo usuário.")
             return
 
+        threading.Thread(
+            target=self._exec_pasta,
+            args=(origem, zip_pasta, zip_local, destino, pasta_tmp, limpar_tmp),
+            daemon=True,
+        ).start()
+
+    def _exec_pasta(
+        self,
+        origem: str,
+        zip_pasta: str | None,
+        zip_local: str | None,
+        destino: str,
+        pasta_tmp: str,
+        limpar_tmp: bool,
+    ) -> None:
         self.after(0, self._log, "[PASTA] === Iniciando restauração da pasta ===")
+        self.after(0, self._log, f"[PASTA] Origem : {origem}")
+        self.after(0, self._log, f"[PASTA] Destino: {destino}")
 
         try:
             os.makedirs(pasta_tmp, exist_ok=True)
 
             if origem == "download":
-                self.after(0, self._log, "[PASTA] Passo 1/4: Baixando ZIP...")
+                self.after(0, self._log, "[PASTA] Passo 1/4: Baixando ZIP do servidor...")
                 url_zip   = self._montar_url(zip_pasta)
                 local_zip = os.path.join(pasta_tmp, zip_pasta)
                 self._baixar_zip(url_zip, local_zip)
             else:
-                self.after(0, self._log, "[PASTA] Passo 1/4: Usando ZIP local...")
+                self.after(0, self._log, "[PASTA] Passo 1/4: Usando arquivo ZIP local...")
                 local_zip = zip_local
+                if not os.path.exists(local_zip):
+                    raise FileNotFoundError(
+                        f"Arquivo não encontrado:\n{local_zip}")
                 self.after(0, self._log, f"  Arquivo: {local_zip}")
+                tamanho_mb = os.path.getsize(local_zip) / 1024 / 1024
+                self.after(0, self._log, f"  Tamanho: {tamanho_mb:.1f} MB")
 
             self.after(0, self._log, "[PASTA] Passo 2/4: Extraindo ZIP...")
             pasta_extracao = os.path.join(pasta_tmp, "pasta_extraida")
-            self._extrair_zip(local_zip, pasta_extracao)
+            # Limpa extracao anterior se existir (force remove readonly)
+            if os.path.exists(pasta_extracao):
+                self._rmtree_force(pasta_extracao)
+            self._extrair_zip_com_permissao(local_zip, pasta_extracao)
 
+            # Detecta subpasta raiz (ex: Protheus_Data/ dentro do ZIP)
             itens = os.listdir(pasta_extracao)
+            self.after(0, self._log, f"  Itens extraidos na raiz: {itens}")
             if len(itens) == 1 and os.path.isdir(os.path.join(pasta_extracao, itens[0])):
                 pasta_extracao = os.path.join(pasta_extracao, itens[0])
-                self.after(0, self._log, f"  Subpasta raiz: {itens[0]}")
+                self.after(0, self._log, f"  Usando subpasta raiz: {itens[0]}")
 
             self.after(0, self._log, "[PASTA] Passo 3/4: Deletando pasta destino...")
             if os.path.exists(destino):
-                shutil.rmtree(destino)
+                self.after(0, self._log, "  Removendo pasta destino (pode demorar)...")
+                self._rmtree_force(destino)
                 self.after(0, self._log, "  Pasta deletada.")
+            else:
+                self.after(0, self._log, "  Pasta destino nao existia, continuando...")
 
             self.after(0, self._log, "[PASTA] Passo 4/4: Copiando para destino...")
             shutil.copytree(pasta_extracao, destino)
@@ -734,17 +850,19 @@ class AbaRestauracao(tk.Frame):
             if limpar_tmp:
                 pasta_base = os.path.join(pasta_tmp, "pasta_extraida")
                 if os.path.exists(pasta_base):
-                    shutil.rmtree(pasta_base)
-                if origem == "download" and os.path.exists(local_zip):
+                    self._rmtree_force(pasta_base)
+                    self.after(0, self._log, "  Pasta de extracao removida.")
+                # Remove o ZIP baixado apenas se foi download (preserva ZIP local)
+                if origem == "download" and local_zip and os.path.exists(local_zip):
                     os.remove(local_zip)
-                self.after(0, self._log, "  Temporários removidos.")
+                    self.after(0, self._log, "  ZIP temporario removido.")
 
-            self.after(0, self._log, "[PASTA] ✔ Pasta Protheus_Data restaurada!")
+            self.after(0, self._log, "[PASTA] ✔ Pasta Protheus_Data restaurada com sucesso!")
             self.after(0, self.atualizar_rodape, "✔  Pasta Protheus_Data restaurada com sucesso!")
 
         except PermissionError as e:
             self.after(0, self._log, f"[PASTA] ❌ Erro de permissão: {e}")
-            self.after(0, self._log, "[PASTA] Dica: feche o Protheus e o AppServer!")
+            self.after(0, self._log, "[PASTA] Dica: feche o Protheus e o AppServer antes de restaurar!")
             self.after(0, messagebox.showerror, "Erro de Permissão",
                 "Feche o Protheus/AppServer e tente novamente.\n\n" + str(e))
         except Exception as e:
@@ -752,6 +870,14 @@ class AbaRestauracao(tk.Frame):
             self.after(0, messagebox.showerror, "Erro na Restauração da Pasta", str(e))
 
     def _restaurar_tudo(self) -> None:
+        # Para o "tudo", a confirmacao fica aqui no thread da UI
+        ok = messagebox.askyesno(
+            "Restaurar Banco + Pasta",
+            "Isso irá restaurar o BANCO e a pasta Protheus_Data.\n\n"
+            "Certifique-se de que todos os campos estão preenchidos.\n\n"
+            "Deseja continuar?")
+        if not ok:
+            return
         threading.Thread(target=self._exec_tudo, daemon=True).start()
 
     def _exec_tudo(self) -> None:
@@ -760,5 +886,14 @@ class AbaRestauracao(tk.Frame):
         self._exec_banco()
         time.sleep(1)
         self.after(0, self._log, "[⚡] Iniciando restauração da pasta...")
-        self._exec_pasta()
+
+        # Coleta parametros da pasta diretamente (ja confirmado acima)
+        destino    = self.rst_pasta_dest.get().strip()
+        pasta_tmp  = self.rst_pasta_tmp.get().strip()
+        limpar_tmp = self.rst_limpar_tmp.get()
+        origem     = self.rst_pasta_origem.get()
+        zip_pasta  = self.rst_zip_pasta.get().strip() if origem == "download" else None
+        zip_local  = self.rst_zip_pasta_local.get().strip() if origem == "local" else None
+
+        self._exec_pasta(origem, zip_pasta, zip_local, destino, pasta_tmp, limpar_tmp)
         self.after(0, self._log, "[⚡] ✔ Restauração completa finalizada!")

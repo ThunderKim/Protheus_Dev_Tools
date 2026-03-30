@@ -5,5 +5,12 @@
     "username": "protheus",
     "password": "protheus$123",
     "empresa": "T1"
+  },
+  "JOAO": {
+    "server": "SPON010125012",
+    "database": "2410",
+    "username": "protheus",
+    "password": "protheus$123",
+    "empresa": "T1"
   }
 }
