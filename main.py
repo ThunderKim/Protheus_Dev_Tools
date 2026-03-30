@@ -1,7 +1,7 @@
 """
 main.py
 =======
-Ponto de entrada da aplicação Protheus Dev Tool.
+Ponto de entrada da aplicação Protheus Dev Tools.
 
 Uso:
     python main.py
