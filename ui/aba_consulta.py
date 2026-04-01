@@ -60,14 +60,15 @@ class AbaConsulta(ttk.Frame):
         self.entry_filtro.bind("<Return>", lambda e: self.buscar())
 
         # Botão buscar
-        tk.Button(
+        self.btn_buscar = tk.Button(
             linha_busca, text="  BUSCAR  ",
             bg="#13131f", fg="white",
             font=("Consolas", 9, "bold"),
             relief="flat", cursor="hand2",
             activebackground="#6d28d9",
             command=self.buscar,
-        ).pack(side="left", padx=8)
+        )
+        self.btn_buscar.pack(side="left", padx=8)
 
         # Botão histórico
         btn_hist = tk.Menubutton(
@@ -141,6 +142,11 @@ class AbaConsulta(ttk.Frame):
         filtro = self.entry_filtro.get().strip()
         self.historico.registrar(self.nome_aba, filtro)
 
+        # Desabilita o botão e mostra indicador de carregamento
+        self.btn_buscar.config(text="  Buscando...  ", state="disabled",
+                               bg="#2a2a3e")
+        self.lbl_count.config(text="Consultando...")
+
         threading.Thread(
             target=self._thread_busca, args=(filtro,), daemon=True
         ).start()
@@ -151,7 +157,16 @@ class AbaConsulta(ttk.Frame):
             colunas, linhas = metodo(filtro)
             self.after(0, self._preencher, colunas, linhas)
         except Exception as e:
-            self.after(0, messagebox.showerror, "Erro na Consulta", str(e))
+            self.after(0, self._erro_busca, str(e))
+
+    def _erro_busca(self, msg: str) -> None:
+        """Restaura o botão e exibe o erro."""
+        self._restaurar_botao()
+        messagebox.showerror("Erro na Consulta", msg)
+
+    def _restaurar_botao(self) -> None:
+        self.btn_buscar.config(text="  BUSCAR  ", state="normal",
+                               bg="#13131f")
 
     def _preencher(self, colunas: list, linhas: list) -> None:
         self.tree.delete(*self.tree.get_children())
@@ -172,6 +187,7 @@ class AbaConsulta(ttk.Frame):
         total = len(linhas)
         self.lbl_count.config(text=f"{total} registro(s) encontrado(s)")
         self.atualizar_rodape(f"Última consulta: {self.nome_aba} — {total} registros")
+        self._restaurar_botao()
 
     # ── Ordenação ─────────────────────────────────────────
 

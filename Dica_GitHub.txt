@@ -1,0 +1,28 @@
+
+# preparar commit
+git add .
+
+# Faz o commit localmente
+git commit -m "Commit: Novas Abas API Fake e ajustes na UI"
+
+# Envia para o GitHub na branch develop
+git push origin develop
+
+
+# executar aplicação
+python main.py
+
+
+# Gerar executavel do projeto:
+1. Preparação do Ambiente
+Abra o terminal ou CMD na pasta do seu projeto e instale o PyInstaller:
+code
+Bash
+pip install pyinstaller
+2. Gerar o Executável
+Execute o seguinte comando no terminal (estando dentro da pasta onde está o main.py):
+code
+Bash
+pyinstaller --noconsole --onefile --name "ProtheusTool" --add-data "ui;ui" main.py
+
+

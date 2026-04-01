@@ -1,4 +1,4 @@
-# Protheus Dev Tools
+# Protheus Dicionário Tool
 
 Ferramenta desktop para auxiliar desenvolvedores **TOTVS Protheus** no dia a dia.
 Interface gráfica em Python + Tkinter, conexão direta ao SQL Server via ODBC.

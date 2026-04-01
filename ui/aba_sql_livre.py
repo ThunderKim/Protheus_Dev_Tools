@@ -65,14 +65,15 @@ class AbaSqlLivre(tk.Frame):
         linha = tk.Frame(self, bg="#0d0d1a")
         linha.pack(fill="x", padx=12, pady=6)
 
-        tk.Button(
+        self._btn_exec = tk.Button(
             linha, text="  ▶  EXECUTAR  (F5)  ",
             bg="#059669", fg="white",
             font=("Consolas", 10, "bold"),
             relief="flat", cursor="hand2",
             activebackground="#047857",
             command=self.executar,
-        ).pack(side="left")
+        )
+        self._btn_exec.pack(side="left")
 
         tk.Button(
             linha, text="🗑 Limpar",
@@ -130,6 +131,10 @@ class AbaSqlLivre(tk.Frame):
         sql = self.editor.get("1.0", "end").strip()
         if not sql:
             return
+        # Desabilita botão durante execução
+        self._btn_exec.config(text="  Executando...  ", state="disabled",
+                              bg="#047857")
+        self.lbl_count.config(text="Consultando...")
         threading.Thread(target=self._thread_exec, args=(sql,), daemon=True).start()
 
     def _thread_exec(self, sql: str) -> None:
@@ -137,7 +142,13 @@ class AbaSqlLivre(tk.Frame):
             colunas, linhas = self.banco.consultar_sql_livre(sql)
             self.after(0, self._preencher, colunas, linhas)
         except Exception as e:
-            self.after(0, messagebox.showerror, "Erro SQL", str(e))
+            self.after(0, self._erro_exec, str(e))
+
+    def _erro_exec(self, msg: str) -> None:
+        self._btn_exec.config(text="  ▶  EXECUTAR  (F5)  ", state="normal",
+                              bg="#059669")
+        self.lbl_count.config(text="")
+        messagebox.showerror("Erro SQL", msg)
 
     def _preencher(self, colunas: list, linhas: list) -> None:
         self.tree.delete(*self.tree.get_children())
@@ -152,6 +163,8 @@ class AbaSqlLivre(tk.Frame):
         total = len(linhas)
         self.lbl_count.config(text=f"{total} registro(s)")
         self.atualizar_rodape(f"SQL Livre — {total} registros retornados")
+        self._btn_exec.config(text="  ▶  EXECUTAR  (F5)  ", state="normal",
+                              bg="#059669")
 
     # ── Exportação ────────────────────────────────────────
 

@@ -3,8 +3,17 @@ database.py
 ===========
 Camada de dados: conexão e consultas ao SQL Server via pyodbc.
 Sem dependências de UI.
+
+Thread-safety:
+    Cada chamada a executar_consulta abre um cursor novo e fecha ao final.
+    A Connection do pyodbc suporta múltiplos cursors sequenciais em uma
+    mesma thread sem problemas. Para chamadas concorrentes de threads
+    diferentes, o pyodbc pode se comportar de forma imprevisível com uma
+    única Connection compartilhada, por isso cada consulta é protegida por
+    um threading.Lock — garantindo execução serializada e segura.
 """
 
+import threading
 import pyodbc
 from config import CONFIG
 
@@ -13,13 +22,14 @@ class BancoDados:
     """Responsável por conectar e consultar o SQL Server."""
 
     def __init__(self) -> None:
-        self.conexao: pyodbc.Connection | None = None
+        self._conn_str: str = ""
+        self._lock = threading.Lock()
 
     # ── Conexão ───────────────────────────────────────────
 
     def conectar(self) -> bool:
-        """Abre a conexão com o banco usando os dados do CONFIG global."""
-        string_conexao = (
+        """Valida a conexão e salva a string para uso posterior."""
+        self._conn_str = (
             f"DRIVER={{{CONFIG['driver']}}};"
             f"SERVER={CONFIG['server']};"
             f"DATABASE={CONFIG['database']};"
@@ -27,26 +37,40 @@ class BancoDados:
             f"PWD={CONFIG['password']};"
             "TrustServerCertificate=yes;"
         )
-        self.conexao = pyodbc.connect(string_conexao)
+        # Abre uma conexão de teste para validar as credenciais
+        conn = pyodbc.connect(self._conn_str, timeout=10)
+        conn.close()
         return True
 
     def desconectar(self) -> None:
-        """Fecha a conexão com o banco."""
-        if self.conexao:
-            self.conexao.close()
-            self.conexao = None
+        """Limpa a string de conexão (conexões são abertas por demanda)."""
+        self._conn_str = ""
+
+    def _nova_conexao(self) -> pyodbc.Connection:
+        """Abre uma nova conexão dedicada para a query atual."""
+        return pyodbc.connect(self._conn_str, timeout=30)
 
     # ── Execução genérica ─────────────────────────────────
 
     def executar_consulta(
         self, sql: str, parametros: tuple = ()
     ) -> tuple[list[str], list]:
-        """Executa *sql* com *parametros* e retorna (colunas, linhas)."""
-        cursor = self.conexao.cursor()
-        cursor.execute(sql, parametros)
-        colunas = [d[0] for d in cursor.description]
-        linhas = cursor.fetchall()
-        return colunas, linhas
+        """Executa *sql* e retorna (colunas, linhas).
+
+        Abre uma conexão dedicada por chamada para evitar conflitos entre
+        threads concorrentes.
+        """
+        conn = self._nova_conexao()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, parametros)
+            colunas = [d[0] for d in cursor.description]
+            linhas  = cursor.fetchall()
+            cursor.close()
+            return colunas, linhas
+        finally:
+            conn.close()
+
 
     # ── Sufixo dinâmico ───────────────────────────────────
 

@@ -46,7 +46,7 @@ class App(tk.Tk):
         self.historico       = HistoricoConsultas()
         self.conexoes_salvas = carregar_conexoes()
 
-        self.title("Protheus Dev Tool")
+        self.title("Protheus Dicionário Tool")
         self.geometry("1100x680")
         self.configure(bg="#0079B8")
         self.resizable(True, True)
@@ -104,7 +104,7 @@ class App(tk.Tk):
         header.pack_propagate(False)
 
         tk.Label(header,
-            text="⬡  PROTHEUS DEV TOOLS",
+            text="⬡  PROTHEUS DICIONÁRIO TOOL",
             bg="#13131f", fg="#f5f8fa", font=("Consolas", 15, "bold"),
         ).pack(side="left", padx=20, pady=12)
 
