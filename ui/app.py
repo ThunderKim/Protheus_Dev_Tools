@@ -17,7 +17,8 @@ from ui.aba_sql_livre   import AbaSqlLivre
 from ui.aba_nfe         import AbaNfe
 from ui.aba_restauracao import AbaRestauracao
 from ui.aba_api_fake    import AbaApiFake
-from ui.aba_log_profiler import AbaLogProfiler
+from ui.aba_log_profiler   import AbaLogProfiler
+from ui.aba_appserver_ini  import AbaAppserverIni
 from ui.ajuda           import abrir_ajuda
 
 
@@ -237,6 +238,12 @@ class App(tk.Tk):
 
         # LogProfiler
         AbaLogProfiler(
+            notebook        = self.notebook,
+            atualizar_rodape= self._set_rodape,
+        )
+
+        # AppServer.ini editor
+        AbaAppserverIni(
             notebook        = self.notebook,
             atualizar_rodape= self._set_rodape,
         )
